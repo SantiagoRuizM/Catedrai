@@ -77,6 +77,50 @@ rerun analysis):
 python -m catedrai process sessions/algo101-lecture4
 ```
 
+### Zoom auto-join
+
+Auto-join a Zoom meeting from its link and capture it (audio + screenshots only - run
+`process` afterward once you have an `ANTHROPIC_API_KEY` to generate notes):
+
+```bash
+python -m catedrai zoom https://universidad.zoom.us/j/123456789
+python -m catedrai zoom <link> --no-screenshots     # audio only
+python -m catedrai zoom <link> --headless           # no visible browser window
+```
+
+It joins via the web client as a guest with a random display name, records system audio
+(whatever the default output device is playing), and takes deduplicated screenshots of
+the meeting page itself - immune to which window/tab is on top. Recording stops
+automatically when the meeting ends, or on `Ctrl+C`.
+
+Because audio is recorded from the *system default output device* by default, it picks
+up anything else playing through that device too. If you want to listen to something
+else (Discord, Spotify, another call) while the bot records, route it to a different
+output device: Windows Settings -> System -> Sound -> Volume mixer -> pick a different
+output per app, leaving the Zoom browser on the default device.
+
+**Recording without hearing the class:** loopback capture requires the audio to actually
+be rendered to *some* output device, but that device doesn't have to be your real
+speakers/headphones - it can be a virtual one:
+
+1. Install a virtual audio cable, e.g. [VB-CABLE](https://vb-audio.com/Cable/) (free,
+   needs admin rights to install). It adds a playback device named
+   `CABLE Input` and a matching recording device `CABLE Output`.
+2. Start the bot with `--audio-device "CABLE Input"` (the exact name, not just `CABLE` -
+   `CABLE Output` also contains that substring and picking the wrong one silently
+   records nothing):
+   ```bash
+   python -m catedrai zoom <link> --audio-device "CABLE Input"
+   ```
+3. *Once it's joined and the meeting's Chromium tab is actively playing audio* (Windows
+   only lists apps with an active audio session), route it to the cable: Windows
+   Settings -> System -> Sound -> Volume mixer -> set Chromium's output device to
+   `CABLE Input`.
+
+The meeting audio is still captured in full; it just never reaches a device you can
+hear. A typo in `--audio-device` is rejected immediately at startup rather than silently
+recording nothing for the whole class.
+
 ## Project layout
 
 ```

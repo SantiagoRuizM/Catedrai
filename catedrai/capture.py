@@ -44,12 +44,20 @@ class AudioRecorder:
     whatever Windows is playing through the speakers, which is what actually
     picks up a Zoom call's audio regardless of who has permission to record
     inside Zoom itself.
+
+    device_name, for source="loopback", loopback-records a specific playback
+    device (matched by substring, via soundcard) instead of the system
+    default. Pairs with a virtual audio cable (e.g. VB-CABLE): route just the
+    Zoom browser's output to the cable via Windows' per-app volume mixer, and
+    point this at the cable's name - the meeting audio gets captured without
+    ever reaching real speakers/headphones.
     """
 
     def __init__(
         self,
         path: Path,
         source: str = "microphone",
+        device_name: str | None = None,
         samplerate: int = 48000,
         channels: int = 2,
         chunk_frames: int = 4096,
@@ -58,6 +66,7 @@ class AudioRecorder:
             raise ValueError(f"Unknown audio source: {source!r}")
         self.path = path
         self.source = source
+        self.device_name = device_name
         self.samplerate = samplerate
         self.channels = channels
         self.chunk_frames = chunk_frames
@@ -67,9 +76,24 @@ class AudioRecorder:
 
     def _get_device(self):
         if self.source == "loopback":
-            speaker = sc.default_speaker()
-            return sc.get_microphone(id=str(speaker.name), include_loopback=True)
+            name = self.device_name or sc.default_speaker().name
+            return sc.get_microphone(id=name, include_loopback=True)
         return sc.default_microphone()
+
+
+def resolve_loopback_device_name(device_name: str) -> None:
+    """Raises IndexError if device_name doesn't match a real playback
+    device. Call this before starting to record (not inside AudioRecorder's
+    background thread) so a typo in a user-supplied device name surfaces
+    immediately - not after sitting through a whole class with nothing
+    recorded, which is where AudioRecorder._run would otherwise report it."""
+    try:
+        sc.get_microphone(id=device_name, include_loopback=True)
+    except IndexError:
+        available = ", ".join(repr(s.name) for s in sc.all_speakers())
+        raise IndexError(
+            f"No playback device matching {device_name!r}. Available: {available}"
+        ) from None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -95,6 +119,21 @@ class AudioRecorder:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
+
+
+def frame_changed(prev: Image.Image | None, cur: Image.Image, threshold: float = 0.02) -> bool:
+    """True if `cur` differs meaningfully from `prev` (a downscaled perceptual
+    diff) - used to skip saving a static slide dozens of times. `prev=None`
+    (no baseline yet) always counts as changed."""
+    if prev is None:
+        return True
+    prev_small = prev.resize((160, 90)).convert("L")
+    cur_small = cur.resize((160, 90)).convert("L")
+    diff = ImageChops.difference(prev_small, cur_small)
+    hist = diff.histogram()
+    total = sum(i * n for i, n in enumerate(hist))
+    max_total = 255 * 160 * 90
+    return (total / max_total) > threshold
 
 
 class ScreenshotCapturer:
@@ -123,7 +162,7 @@ class ScreenshotCapturer:
                 while not self._stop.is_set():
                     shot = sct.grab(monitor)
                     img = Image.frombytes("RGB", shot.size, shot.rgb)
-                    if self._is_new_frame(img):
+                    if frame_changed(self._last_image, img, self.diff_threshold):
                         ts = datetime.now().strftime("%H%M%S_%f")
                         path = self.out_dir / f"{ts}.png"
                         img.save(path)
@@ -132,17 +171,6 @@ class ScreenshotCapturer:
                     self._stop.wait(self.interval)
         except Exception as exc:
             self.error = exc
-
-    def _is_new_frame(self, img: Image.Image) -> bool:
-        if self._last_image is None:
-            return True
-        prev = self._last_image.resize((160, 90)).convert("L")
-        cur = img.resize((160, 90)).convert("L")
-        diff = ImageChops.difference(prev, cur)
-        hist = diff.histogram()
-        total = sum(i * n for i, n in enumerate(hist))
-        max_total = 255 * 160 * 90
-        return (total / max_total) > self.diff_threshold
 
     def stop(self) -> None:
         self._stop.set()
